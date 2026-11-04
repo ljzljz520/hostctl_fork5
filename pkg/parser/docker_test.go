@@ -120,6 +120,84 @@ networks:
 	})
 }
 
+func TestNewProfileFromDockerRejectsInjection(t *testing.T) {
+	t.Run("malicious domain suffix", func(t *testing.T) {
+		c := newClientWithResponse(t, map[string]string{
+			"/v1.22/containers/json": `[{
+	"Id": "container_id1", "Names": ["container1"],
+	"NetworkSettings": { "Networks": { "n1": { "NetworkID": "id1", "IPAddress": "172.0.0.2" }}}
+}]`,
+		})
+
+		p, err := NewProfileFromDocker(&docker.Options{
+			Domain: "test\n172.0.0.2 pwned.loc",
+			Cli:    c,
+		})
+
+		assert.Error(t, err)
+		assert.Nil(t, p)
+	})
+
+	t.Run("malicious container name reported by daemon", func(t *testing.T) {
+		c := newClientWithResponse(t, map[string]string{
+			"/v1.22/containers/json": `[{
+	"Id": "container_id1", "Names": ["bad\n6.6.6.6 pwned.loc"],
+	"NetworkSettings": { "Networks": { "n1": { "NetworkID": "id1", "IPAddress": "172.0.0.2" }}}
+}]`,
+		})
+
+		p, err := NewProfileFromDocker(&docker.Options{
+			Domain: "loc",
+			Cli:    c,
+		})
+
+		assert.Error(t, err)
+		assert.Nil(t, p)
+	})
+
+	t.Run("malicious domain suffix with compose", func(t *testing.T) {
+		r := strings.NewReader(`
+version: "3"
+services:
+  container1:
+    image: some_image:3.5
+`)
+		c := newClientWithResponse(t, map[string]string{
+			"/v1.22/containers/json": `[{
+	"Id": "container_id1", "Names": ["/app_container1_1"],
+	"NetworkSettings": { "Networks": { "n1": { "NetworkID": "id1", "IPAddress": "172.0.0.2" }}}
+}]`,
+		})
+
+		p, err := NewProfileFromDockerCompose(&docker.Options{
+			Domain:      "loc\n6.6.6.6 pwned.loc",
+			Cli:         c,
+			ComposeFile: r,
+			ProjectName: "app",
+		})
+
+		assert.Error(t, err)
+		assert.Nil(t, p)
+	})
+
+	t.Run("empty domain keeps working", func(t *testing.T) {
+		c := newClientWithResponse(t, map[string]string{
+			"/v1.22/containers/json": `[{
+	"Id": "container_id1", "Names": ["container1"],
+	"NetworkSettings": { "Networks": { "n1": { "NetworkID": "id1", "IPAddress": "172.0.0.2" }}}
+}]`,
+		})
+
+		p, err := NewProfileFromDocker(&docker.Options{
+			Domain: "",
+			Cli:    c,
+		})
+
+		assert.NoError(t, err)
+		assert.Equal(t, []string{"container1."}, p.GetAllHostNames())
+	})
+}
+
 type transportFunc func(*http.Request) (*http.Response, error)
 
 func (tf transportFunc) RoundTrip(req *http.Request) (*http.Response, error) {

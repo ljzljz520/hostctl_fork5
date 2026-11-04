@@ -14,19 +14,29 @@ import (
 func NewProfileFromDocker(opts *docker.Options) (*types.Profile, error) {
 	p := &types.Profile{}
 
+	if err := validateDockerOptions(opts); err != nil {
+		return nil, err
+	}
+
 	containers, err := docker.GetContainerList(opts)
 	if err != nil {
 		return nil, err
 	}
 
-	addFromContainer(p, containers, opts)
+	if err := addFromContainer(p, containers, opts); err != nil {
+		return nil, err
+	}
 
-	return p, err
+	return p, nil
 }
 
 // NewProfileFromDockerCompose creates a new profile from docker info.
 func NewProfileFromDockerCompose(opts *docker.Options) (*types.Profile, error) {
 	p := &types.Profile{}
+
+	if err := validateDockerOptions(opts); err != nil {
+		return nil, err
+	}
 
 	containers, err := docker.GetContainerList(opts)
 	if err != nil {
@@ -38,12 +48,33 @@ func NewProfileFromDockerCompose(opts *docker.Options) (*types.Profile, error) {
 		return nil, err
 	}
 
-	addFromComposeService(p, containers, composeServices, opts)
+	if err := addFromComposeService(p, containers, composeServices, opts); err != nil {
+		return nil, err
+	}
 
 	return p, nil
 }
 
-func addFromContainer(profile *types.Profile, containers []dtypes.Container, opts *docker.Options) {
+// validateDockerOptions makes sure an attacker-controlled domain suffix
+// cannot inject routes or profile blocks once concatenated to a container
+// name. An empty domain keeps the historical behavior.
+func validateDockerOptions(opts *docker.Options) error {
+	if opts == nil {
+		return types.ErrInvalidHostname
+	}
+
+	if opts.Domain == "" {
+		return nil
+	}
+
+	if err := types.ValidateHostname(opts.Domain); err != nil {
+		return fmt.Errorf("invalid docker domain suffix: %w", err)
+	}
+
+	return nil
+}
+
+func addFromContainer(profile *types.Profile, containers []dtypes.Container, opts *docker.Options) error {
 	var routes []*types.Route
 
 	for _, c := range containers {
@@ -59,10 +90,10 @@ func addFromContainer(profile *types.Profile, containers []dtypes.Container, opt
 		}
 	}
 
-	profile.AddRoutes(routes)
+	return profile.AddRoutes(routes)
 }
 
-func addFromComposeService(p *types.Profile, containers []dtypes.Container, srv []string, opts *docker.Options) {
+func addFromComposeService(p *types.Profile, containers []dtypes.Container, srv []string, opts *docker.Options) error {
 	for _, c := range containers {
 		for _, n := range c.NetworkSettings.Networks {
 			if opts.NetworkID != "" && n.NetworkID != opts.NetworkID {
@@ -73,10 +104,14 @@ func addFromComposeService(p *types.Profile, containers []dtypes.Container, srv 
 
 			routes := routeFromService(srv, name, n.IPAddress, opts)
 			if len(routes) > 0 {
-				p.AddRoutes(routes)
+				if err := p.AddRoutes(routes); err != nil {
+					return err
+				}
 			}
 		}
 	}
+
+	return nil
 }
 
 func routeFromService(srv []string, name string, ip string, opts *docker.Options) []*types.Route {

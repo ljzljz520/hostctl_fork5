@@ -61,7 +61,9 @@ func Parse(r io.Reader) (*types.Content, error) {
 				continue
 			}
 
-			data.Profiles[currProfile].AddRoute(route)
+			if err := data.Profiles[currProfile].AddRoute(route); err != nil {
+				return nil, err
+			}
 
 		default:
 			row := parseToDefault(b, currProfile)
@@ -191,7 +193,9 @@ func ParseProfile(r io.Reader) (*types.Profile, error) {
 		}
 	}
 
-	p.AddRoutes(routes)
+	if err := p.AddRoutes(routes); err != nil {
+		return nil, err
+	}
 
 	return p, nil
 }

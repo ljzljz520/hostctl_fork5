@@ -31,7 +31,13 @@ const (
 type DefaultProfile []*Row
 
 // Render writes the default profile content to the given StringWriter.
+// Every row is validated first so content built by direct struct
+// manipulation cannot inject lines at the rendering exit.
 func (d DefaultProfile) Render(w io.StringWriter) error {
+	if err := d.Validate(); err != nil {
+		return err
+	}
+
 	tmp := bytes.NewBufferString("")
 
 	for i, row := range d {

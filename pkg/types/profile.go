@@ -37,13 +37,22 @@ func (p *Profile) appendIP(n string) {
 	p.IPList = append(p.IPList, n)
 }
 
-// AddRoute adds a single route to the profile.
-func (p *Profile) AddRoute(route *Route) {
-	p.AddRoutes([]*Route{route})
+// AddRoute adds a single route to the profile. It returns an error without
+// mutating the profile when the route is not safe to serialize.
+func (p *Profile) AddRoute(route *Route) error {
+	return p.AddRoutes([]*Route{route})
 }
 
-// AddRoutes adds non duplicated routes to a profile.
-func (p *Profile) AddRoutes(routes []*Route) {
+// AddRoutes adds non duplicated routes to a profile. The whole batch is
+// validated before any mutation, so a single invalid route (for example a
+// hostname containing a line break) leaves the profile untouched.
+func (p *Profile) AddRoutes(routes []*Route) error {
+	for _, r := range routes {
+		if err := ValidateRoute(r); err != nil {
+			return err
+		}
+	}
+
 	if p.Routes == nil {
 		p.Routes = map[string]*Route{}
 	}
@@ -60,6 +69,8 @@ func (p *Profile) AddRoutes(routes []*Route) {
 			p.Routes[ip].HostNames = uniqueStrings(append(p.Routes[ip].HostNames, r.HostNames...))
 		}
 	}
+
+	return nil
 }
 
 // RemoveHostnames removes multiple hostnames of a profile.
@@ -106,7 +117,14 @@ func (p *Profile) GetAllHostNames() []string {
 }
 
 // Render writes the profile content to the given StringWriter.
+// The profile is validated first so content built by direct manipulation of
+// the struct (for instance by Go package callers) cannot inject routes or
+// forged headers at the rendering exit.
 func (p *Profile) Render(w io.StringWriter) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+
 	tmp := bytes.NewBufferString("")
 
 	_, err := tmp.WriteString(fmt.Sprintf("\n# profile.%s %s\n", p.Status, p.Name))

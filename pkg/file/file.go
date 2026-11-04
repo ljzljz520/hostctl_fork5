@@ -1,6 +1,7 @@
 package file
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -113,8 +114,20 @@ func (f *File) AddRoute(name string, route *types.Route) error {
 	return f.AddRoutes(name, []*types.Route{route})
 }
 
-// AddRoutes adds routes information to a given profile.
+// AddRoutes adds routes information to a given profile. Profile name and
+// every route are validated before any state change, so an invalid batch
+// (e.g. a hostname carrying a line break) is rejected atomically.
 func (f *File) AddRoutes(name string, routes []*types.Route) error {
+	if err := types.ValidateProfileName(name); err != nil {
+		return err
+	}
+
+	for _, r := range routes {
+		if err := types.ValidateRoute(r); err != nil {
+			return err
+		}
+	}
+
 	p, err := f.GetProfile(name)
 	if err != nil && !errors.Is(err, types.ErrUnknownProfile) {
 		return err
@@ -127,14 +140,14 @@ func (f *File) AddRoutes(name string, routes []*types.Route) error {
 			Routes: map[string]*types.Route{},
 		}
 
-		p.AddRoutes(routes)
+		if err := p.AddRoutes(routes); err != nil {
+			return err
+		}
 
 		return f.AddProfile(p)
 	}
 
-	p.AddRoutes(routes)
-
-	return nil
+	return p.AddRoutes(routes)
 }
 
 // RemoveHostnames removes route information from a given types.
@@ -181,6 +194,9 @@ func (f *File) Flush() error {
 }
 
 // writeToFile overwrite file with hosts info.
+// The full content is rendered and validated into a buffer before the
+// destination is truncated, so an invalid batch or a malformed profile can
+// never leave a partially written hosts file.
 func (f *File) writeToFile(dst afero.File) error {
 	f.mutex.Lock()
 	defer f.mutex.Unlock()
@@ -189,17 +205,14 @@ func (f *File) writeToFile(dst afero.File) error {
 		return types.ErrNoContent
 	}
 
-	err := dst.Truncate(0)
+	buf := bytes.NewBuffer(nil)
+
+	err := f.data.DefaultProfile.Render(buf)
 	if err != nil {
 		return err
 	}
 
-	err = f.data.DefaultProfile.Render(dst)
-	if err != nil {
-		return err
-	}
-
-	f.writeBanner(dst)
+	f.writeBanner(buf)
 
 	for _, name := range f.data.ProfileNames {
 		if name == types.Default {
@@ -208,13 +221,20 @@ func (f *File) writeToFile(dst afero.File) error {
 
 		p := f.data.Profiles[name]
 
-		err := p.Render(dst)
+		err := p.Render(buf)
 		if err != nil {
 			return err
 		}
 	}
 
-	return nil
+	err = dst.Truncate(0)
+	if err != nil {
+		return err
+	}
+
+	_, err = dst.WriteString(buf.String())
+
+	return err
 }
 
 func (f *File) writeBanner(w io.StringWriter) {
